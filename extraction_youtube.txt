@@ -1,0 +1,115 @@
+import requests, pandas as pd, time
+from sqlalchemy import create_engine
+
+# ============================================================
+# 🔧 PARAMÈTRES À PERSONNALISER
+# ============================================================
+API_KEY = "CLE_API_XXX"
+VIDEO_ID = "URL_YYYY"
+BASE_URL = "https://www.googleapis.com/youtube/v3"
+
+# ============================================================
+# 🧩 Vérification de la clé API
+# ============================================================
+def check_api(key):
+    r = requests.get(f"{BASE_URL}/videos", params={"part": "id", "id": VIDEO_ID, "key": key})
+    if "error" in r.json():
+        print("❌ Clé API invalide ou expirée :", r.json()["error"]["message"])
+        return False
+    print("✅ Clé API valide.")
+    return True
+
+# ============================================================
+# 💬 Récupération des réponses à un commentaire
+# ============================================================
+def get_replies(comment_id, parent_author):
+    replies, token = [], None
+    while True:
+        r = requests.get(f"{BASE_URL}/comments", params={
+            "part": "snippet",
+            "parentId": comment_id,
+            "key": API_KEY,
+            "maxResults": 100,
+            "pageToken": token
+        }).json()
+
+        # Si erreur (quota, parentId invalide, etc.)
+        if "error" in r:
+            print(f"⚠️ Erreur lors de la récupération des réponses de {comment_id}")
+            break
+
+        # Enregistre les réponses
+        for i in r.get("items", []):
+            s = i["snippet"]
+            replies.append({
+                "author": s["authorDisplayName"],
+                "text": s["textDisplay"],
+                "date": s["publishedAt"],
+                "parent_id": comment_id,
+                "parent_author": parent_author,
+                "type": "reply"
+            })
+
+        token = r.get("nextPageToken")
+        if not token: break
+        time.sleep(0.2)
+    return replies
+
+# ============================================================
+# 🧠 Récupération de tous les commentaires (et leurs réponses)
+# ============================================================
+def get_comments(video_id):
+    comments, token = [], None
+    while True:
+        r = requests.get(f"{BASE_URL}/commentThreads", params={
+            "part": "snippet",
+            "videoId": video_id,
+            "key": API_KEY,
+            "maxResults": 100,
+            "pageToken": token
+        }).json()
+
+        # Boucle sur chaque commentaire principal
+        for it in r.get("items", []):
+            s = it["snippet"]["topLevelComment"]["snippet"]
+            cid = it["snippet"]["topLevelComment"]["id"]
+
+            # Enregistre le commentaire principal
+            comments.append({
+                "author": s["authorDisplayName"],
+                "text": s["textDisplay"],
+                "date": s["publishedAt"],
+                "parent_id": None,
+                "parent_author": None,
+                "type": "top"
+            })
+
+            # Si réponses disponibles, on tente de les récupérer
+            if it["snippet"].get("totalReplyCount", 0) > 0:
+                comments += get_replies(cid, s["authorDisplayName"])
+
+        token = r.get("nextPageToken")
+        print(f"✅ {len(comments)} commentaires récupérés...")
+        if not token: break
+        time.sleep(0.3)
+    return comments
+
+# ============================================================
+# 💾 Sauvegarde : Base SQLite + Fichier Excel
+# ============================================================
+def save_export(comments):
+    df = pd.DataFrame(comments)
+    df.to_sql("comments", create_engine("sqlite:///youtube_comments.db"), if_exists="replace", index=False)
+    df.to_excel("youtube_comments.xlsx", index=False)
+
+    top = len(df[df["type"] == "top"])
+    reply = len(df[df["type"] == "reply"])
+    print(f"📊 {top} commentaires principaux, {reply} réponses")
+    print(f"📂 Fichier exporté : youtube_comments.xlsx")
+
+# ============================================================
+# 🚀 Lancement du script
+# ============================================================
+if check_api(API_KEY):
+    comments = get_comments(VIDEO_ID)
+    save_export(comments))
